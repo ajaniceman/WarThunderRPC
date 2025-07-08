@@ -304,9 +304,21 @@ maps = {
         "size_km": 65
     },
     "Sicily": {
-        "hashes": ["fcf8f0e0fcfcfcfe"],
+        "hashes": ["fcf8f0e0fcfefcfe"],
         "ULHC_lat": 37.62582130005829,
         "ULHC_lon": 14.575726231320882,
+        "size_km": 65
+    },
+    "Mysterious Valley": {
+        "hashes": ["00e1ffffc7277fef"],
+        "ULHC_lat": 0.0,
+        "ULHC_lon": 0.0,
+        "size_km": 65
+    },
+    "Bulge": {
+        "hashes": ["0f6ffcf8fe781000"],
+        "ULHC_lat": 0.0,
+        "ULHC_lon": 0.0,
         "size_km": 65
     },
     "Korea": {
@@ -371,6 +383,12 @@ maps = {
     },
     "European Province": {
         "hashes": ["fe7e73f701070301"],
+        "ULHC_lat": 0.0,
+        "ULHC_lon": 0.0,
+        "size_km": 65
+    },
+    "Defending Stalingrad": {
+        "hashes": ["f8f8f8f0e0e0e0e0"],
         "ULHC_lat": 0.0,
         "ULHC_lon": 0.0,
         "size_km": 65
@@ -490,7 +508,7 @@ maps = {
         "size_km": 65
     },
     "Kamchatka": {
-        "hashes": ["cf9b133330387960"],
+        "hashes": ["c7cf133330307840"],
         "ULHC_lat": 0.0,
         "ULHC_lon": 0.0,
         "size_km": 65
@@ -514,7 +532,7 @@ maps = {
         "size_km": 65
     },
     "Pyrenees": {
-        "hashes": ["ff03f2fe1f00807f"],
+        "hashes": ["7f02f0fe0f008017"],
         "ULHC_lat": 0.0,
         "ULHC_lon": 0.0,
         "size_km": 65
@@ -557,6 +575,18 @@ maps = {
     },
     "Bourbon Island": {
         "hashes": ["00183c3c3c180000"],
+        "ULHC_lat": 0.0,
+        "ULHC_lon": 0.0,
+        "size_km": 65
+    },
+    "Western Europe": {
+        "hashes": ["e08080050fcfefe7"],
+        "ULHC_lat": 0.0,
+        "ULHC_lon": 0.0,
+        "size_km": 65
+    },
+    "Hokkaido": {
+        "hashes": ["080c1c7c70707000"],
         "ULHC_lat": 0.0,
         "ULHC_lon": 0.0,
         "size_km": 65
