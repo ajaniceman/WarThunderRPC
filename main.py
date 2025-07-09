@@ -16,7 +16,7 @@ import telemetry # Custom module for War Thunder telemetry API interaction
 
 #region Global Configuration & Constants
 # Discord Application Client ID for Rich Presence
-CLIENT_ID = "1390355314699796520" 
+CLIENT_ID = "YOUR_DISCORD_APPLICATION_CLIENT_ID_HERE" 
 
 # Directory to save downloaded map images
 MAP_PICTURES_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'mapPictures')

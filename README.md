@@ -1,6 +1,6 @@
-# **War Thunder Discord Rich Presence**
+# War Thunder Discord Rich Presence
 
-## **Credits and Shoutout**
+## Credits and Shoutout
 
 A huge shoutout to [ValerieOSD](https://github.com/ValerieOSD/WarThunderRPC) for their foundational work on War Thunder RPC scripts, which served as the inspiration and starting point for this project. Their efforts made this possible\!
 
@@ -10,13 +10,12 @@ This Python script integrates with War Thunder's in-game telemetry API to update
 
 ## **Features**
 
-* **Automatic Status Updates:** Dynamically updates your Discord status based on your in-game activity.  
-* **Vehicle Display:** Shows the name of the vehicle you are currently driving or piloting.  
-* **Battle Rating (BR) Integration:** Fetches and displays the Realistic Battle (RB) Battle Rating for your selected vehicle directly from the War Thunder Wiki.  
-* **Map Display:** Shows the name of the map you are playing on.  
-* **Hangar/Match Detection:** Differentiates between being in the hangar/menu and being in an active match.  
-* **Formatted Vehicle Names:** Displays vehicle names cleanly, e.g., "T 90M 2020 (USSR)" instead of internal game names.
-**Note on Map Display:** The feature for displaying the correct map name and image in the Discord Rich Presence is still under development and may not always show accurate information.
+* **Dynamic Status:** Automatically updates your Discord status when you're in the hangar, in a match, or in a test drive.  
+* **Vehicle Information:** Displays the vehicle you are currently viewing or playing, with its correct in-game name (scraped from War Thunder Wiki).  
+* **Map Recognition:** Identifies the current map you are playing on and displays it.  
+* **Battle Rating (BR):** Fetches and displays the Battle Rating of your current vehicle.  
+* **Game State Detection:** Distinguishes between hangar, in-match, and test drive states.  
+* **Robustness:** Includes error handling for API connectivity issues and unrecognized map data.
 
 ## **Visuals**
 
@@ -27,89 +26,48 @@ Here are some screenshots of the Discord Rich Presence in action:
 |  ![Discord Rich Presence in Hangar](images/InMatch.png) | ![Discord Rich Presence In-Game](images/T90M.png) | ![Discord Rich Presence Example](images/T90MDetails.png) |
 | *Caption for Screenshot 1: Discord Rich Presence displaying in-game status, showing the map (Sinai) and the vehicle (T 90M 2020).* | *Caption for Screenshot 2: Discord Rich Presence displaying hangar status, showing the vehicle (T 90M 2020\) being viewed.* | *Caption for Screenshot 3: A detailed view of the Discord Rich Presence, showing the vehicle's full name, country, and Battle Rating (BR).* |
 
+**Note on Map Display:** For map images to appear in your Discord Rich Presence, you need to upload them as "Art Assets" to your Discord Application in the [Discord Developer Portal](https://discord.com/developers/applications) (under Rich Presence \> Art Assets). The script expects these assets to be named according to the map's lowercased, underscore-separated name (e.g., sinai, golan\_heights). Please be aware that it can take some time for newly uploaded assets to propagate and become visible in your Rich Presence.
 
-## **Setup Instructions**
+## **Prerequisites**
 
-### **1\. Prerequisites**
+Before running the script, ensure you have the following installed:
 
-* **Python 3.x:** Make sure you have Python 3 installed on your system. You can download it from [python.org](https://www.python.org/downloads/).  
-* **Discord Desktop Client:** The Discord application must be running for the Rich Presence to display.  
-* **War Thunder:** The game needs to be installed and running.
+* **Python 3.x:** Download from [python.org](https://www.python.org/downloads/).  
+* **Required Python Libraries:**  
+  pip install pypresence requests Pillow imagehash
 
-### **2\. Clone the Repository**
+* **War Thunder:** The game must be running for the script to fetch telemetry data.  
+* **War Thunder's Local API Enabled:** Ensure War Thunder's local API is accessible. This is usually enabled by default when the game is running. The script connects to http://127.0.0.1:8111.
 
-First, clone this repository to your local machine:
+## **Installation**
 
-git clone https://github.ajaniceman/WarThunderRPC.git  
-cd WarThunderRPC
+1. **Clone the repository (or download the files):**  
+   git clone https://github.com/your-username/WarThunderRPC.git  
+   cd WarThunderRPC
 
+2. **Place the script files:** Ensure main.py, telemetry.py, mapinfo.py, and maps.py are all in the same directory.  
+3. **Create mapPictures directory:** In the same directory as the scripts, create an empty folder named mapPictures. This folder will store downloaded map images.
 
-### **3\. Install Dependencies**
+## **Running the Script**
 
-Navigate to the cloned directory and install the required Python libraries using pip:
-
-pip install \-r requirements.txt
-
-### **4\. Discord Developer Application Setup**
-
-For your Discord Rich Presence to work, you need to create a Discord Application:
-
-1. Go to the [Discord Developer Portal](https://discord.com/developers/applications).  
-2. Click "New Application".  
-3. Give your application a name (e.g., "War Thunder RPC").  
-4. Copy the **Application ID**. This is your CLIENT\_ID.  
-5. Open main.py and replace the placeholder CLIENT\_ID value with your copied Application ID:  
-   CLIENT\_ID \= "YOUR\_APPLICATION\_ID\_HERE"
-
-6. Go to "Rich Presence" \-\> "Art Assets" in your application settings.  
-7. Upload images for your Rich Presence. At a minimum, you'll need:  
-   * logo (for general War Thunder presence)  
-   * hangar (for when you're in the hangar)  
-   * You might also want to upload images for specific maps (e.g., tunisia, kursk) and vehicles if you want custom icons instead of the encyclopedia links. The script currently uses encyclopedia links for vehicles, but map images are looked for locally.
-   **Note:** I will provide a mapPictures folder containing various map images (for both air and ground versions) that you can upload as assets to your Discord application for richer map display.
-
-### **5\. Running the Script**
-
-#### **A. Manually (for testing)**
-
-You can run the script manually from your terminal:
+To run the script, simply execute main.py using Python:
 
 python main.py
 
-*(Use pythonw main.py on Windows if you want to run it without a console window.)*
+Keep this script running in the background while you play War Thunder. You can close the console window or terminate the script when you are finished playing.
 
-#### **B. Automatically on Game Launch (Windows \- Recommended)**
+## **Configuration**
 
-To have the script run automatically when you launch War Thunder, you can use Windows Task Scheduler:
+* **Discord Client ID:** The CLIENT\_ID is hardcoded in main.py. If you wish to use a different Discord Application for Rich Presence, you can change the CLIENT\_ID variable at the top of main.py:  
+  CLIENT\_ID \= "YOUR\_DISCORD\_APPLICATION\_CLIENT\_ID\_HERE" 
 
-1. **Open Task Scheduler:** Search for "Task Scheduler" in the Windows Start menu.  
-2. **Create Basic Task:** In the right-hand pane, click "Create Basic Task...".  
-3. **Name the Task:** Give it a descriptive name, e.g., "War Thunder RPC Launcher". Click "Next".  
-4. **Trigger:** Select "When a specific event is logged". Click "Next".  
-5. **Event:**  
-   * **Log:** Select "Application".  
-   * **Source:** Find "Application".  
-   * **Event ID:** You need the Event ID for War Thunder's launch.  
-     * Launch War Thunder.  
-     * Open **Event Viewer** (search for it in Start menu).  
-     * Navigate to Windows Logs \-\> Application.  
-     * Look for a recent "Information" event from "Application" related to aces.exe (War Thunder's executable). Note down the "Event ID" (commonly 1000 or 1001).  
-     * Enter this Event ID in Task Scheduler.  
-6. **Action:** Select "Start a program". Click "Next".  
-7. **Program/script:**  
-   * **Program/script:** Enter the full path to your pythonw.exe (e.g., C:\\Users\\YourUser\\AppData\\Local\\Programs\\Python\\Python39\\pythonw.exe).  
-   * **Add arguments (optional):** Enter the full path to your main.py script (e.g., "C:\\Path\\To\\Your\\WarThunder-RPC\\main.py"). **Ensure the path is enclosed in double quotes if it contains spaces.**  
-   * **Start in (optional):** Enter the directory where main.py is located (e.g., C:\\Path\\To\\Your\\WarThunder-RPC).  
-8. **Finish:** Click "Next" and then "Finish".
+  **Important:** You **must** replace "YOUR\_DISCORD\_APPLICATION\_CLIENT\_ID\_HERE" with your own unique Application ID obtained from the Discord Developer Portal. This is crucial for the Rich Presence to function correctly for your Discord account.  
+  You can create and manage Discord applications at the [Discord Developer Portal](https://discord.com/developers/applications).
 
-#### **C. Automatically on Login (Windows \- Simpler)**
+## **Troubleshooting**
 
-This method will launch the script every time you log into your Windows account.
-
-1. **Open Startup Folder:** Press Win \+ R, type shell:startup, and press Enter.  
-2. **Create Shortcut:** Right-click inside the Startup folder, select New \-\> Shortcut.  
-3. **Type the location of the item:**  
-   * Enter the path to your Python interpreter followed by the path to your script:  
-     "C:\\Path\\To\\Your\\pythonw.exe" "C:\\Path\\To\\Your\\WarThunder-RPC\\main.py"  
-     (Replace with your actual paths. Use pythonw.exe to run without a console window.)  
-4. **Name the Shortcut:** Give it a name like "War Thunder RPC". Click "Finish".
+* **"War Thunder is not running"**: Ensure War Thunder is actively running.  
+* **"Could not connect to map JSON API" / "Map JSON data malformed or empty"**: This can happen if War Thunder is in the hangar or a loading screen. If it persists during a match, ensure your firewall isn't blocking Python's access to localhost:8111.  
+* **"Map image not recognized"**: The script uses perceptual hashing to identify maps. If a new map is added to War Thunder or an existing map's image changes significantly, its hash might not be in maps.py. You may need to manually add new map hashes to maps.py.  
+* **Incorrect Vehicle Names / BRs**: The script attempts to scrape vehicle names and BRs from the War Thunder Wiki. If the wiki's HTML structure changes, or if a vehicle page has an unusual format, the scraping might fail or produce incorrect results.  
+* **ValueError: invalid literal for int() with base 16: ''**: This error indicates an empty string in the hashes list within your maps.py file. Ensure all hash entries are valid hexadecimal strings or the list is empty (\[\]).
