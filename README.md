@@ -24,7 +24,7 @@ Here are some screenshots of the Discord Rich Presence in action:
 | Screenshot 1 | Screenshot 2 | Screenshot 3 |
 | :---- | :---- | :---- |
 |  ![Discord Rich Presence in Hangar](images/InMatch.png) | ![Discord Rich Presence In-Game](images/T90M.png) | ![Discord Rich Presence Example](images/T90MDetails.png) |
-| *Caption for Screenshot 1: Discord Rich Presence displaying in-game status, showing the map (Sinai) and the vehicle (T 90M 2020).* | *Caption for Screenshot 2: Discord Rich Presence displaying hangar status, showing the vehicle (T 90M 2020\) being viewed.* | *Caption for Screenshot 3: A detailed view of the Discord Rich Presence, showing the vehicle's full name, country, and Battle Rating (BR).* |
+| *Caption for Screenshot 1: Discord Rich Presence displaying in-game status, showing the map (Sinai) and the vehicle (T-90M).* | *Caption for Screenshot 2: Discord Rich Presence displaying hangar status, showing the vehicle (T-90M\) being viewed.* | *Caption for Screenshot 3: A detailed view of the Discord Rich Presence, showing the vehicle's full name, country, and Battle Rating (BR).* |
 
 **Note on Map Display:** For map images to appear in your Discord Rich Presence, you need to upload them as "Art Assets" to your Discord Application in the [Discord Developer Portal](https://discord.com/developers/applications) (under Rich Presence \> Art Assets). The script expects these assets to be named according to the map's lowercased, underscore-separated name (e.g., sinai, golan\_heights). Please be aware that it can take some time for newly uploaded assets to propagate and become visible in your Rich Presence.
 
