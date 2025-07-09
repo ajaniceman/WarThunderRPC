@@ -42,7 +42,7 @@ Before running the script, ensure you have the following installed:
 ## **Installation**
 
 1. **Clone the repository (or download the files):**  
-   git clone https://github.com/your-username/WarThunderRPC.git  
+   git clone https://github.com/ajaniceman/WarThunderRPC.git  
    cd WarThunderRPC
 
 2. **Place the script files:** Ensure main.py, telemetry.py, mapinfo.py, and maps.py are all in the same directory.  
