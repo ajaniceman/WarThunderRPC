@@ -1,24 +1,48 @@
-import requests
-import json
-import time
 import os
 import re
 import urllib.parse
 import traceback
-from PIL import Image
-import imagehash
-from pypresence import Presence
-import html # Added for unescaping HTML entities
+import sys
+import time
+import argparse
+import queue
+import json # Added: Import json for loading config in non-frozen mode
+
+# Use a try-except block for critical external imports to provide better feedback
+try:
+    import requests
+    from PIL import Image
+    import imagehash
+    from pypresence import Presence, exceptions
+    import html
+except ImportError as e:
+    # Log the import error if the logger is available, otherwise print to stderr
+    if 'logger_config' in sys.modules and hasattr(sys.modules['logger_config'], 'logger'):
+        sys.modules['logger_config'].logger.error(f"FATAL ERROR: Missing required module. Please ensure all dependencies are installed and bundled correctly: {e}")
+        sys.modules['logger_config'].logger.error(traceback.format_exc())
+    else:
+        print(f"FATAL ERROR: Missing required module. Please ensure all dependencies are installed and bundled correctly: {e}", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+    sys.exit(1) # Exit if critical imports fail
 
 #region Project Imports
 import telemetry # Custom module for War Thunder telemetry API interaction
+import logger_config # Import the logging configuration
+import logging # Added: Import logging module here for getLogger
 #endregion
 
-#region Global Configuration & Constants
-# Discord Application Client ID for Rich Presence
-CLIENT_ID = "YOUR_DISCORD_APPLICATION_CLIENT_ID_HERE" 
+# Get the logger instance
+logger = logging.getLogger('WarThunderRPC')
 
+# Global flag to control the RPC loop (used by gui_launcher to stop)
+_rpc_running = False
+
+# Global RPC client instance (will be initialized in run_rpc)
+RPC = None
+
+#region Global Configuration & Constants
 # Directory to save downloaded map images
+# This is the primary definition for mapPictures directory.
 MAP_PICTURES_DIR = os.path.join(os.path.dirname(os.path.realpath(__file__)), 'mapPictures')
 os.makedirs(MAP_PICTURES_DIR, exist_ok=True) # Ensure the directory exists
 
@@ -39,18 +63,26 @@ COUNTRY_DISPLAY_MAP = {
 
 # List of known country prefixes for vehicle names
 COUNTRY_PREFIXES = list(COUNTRY_DISPLAY_MAP.keys())
-#endregion
 
-#region RPC & Telemetry Initialization
-RPC = Presence(CLIENT_ID)
-RPC.connect() # Connect to Discord RPC
-telem_interface = telemetry.TelemInterface() # Initialize telemetry interface
-# CLOCK_TIMER is no longer a fixed start time, removed.
+# Default message templates (will be overridden by custom_message_templates if provided)
+DEFAULT_MESSAGE_TEMPLATES = {
+    'hangar_state': "In the hangar",
+    'hangar_details': "Looking at {vehicle_display_name}",
+    'hangar_details_browsing': "Browsing vehicles...",
+    'match_state': "{vehicle_type_action} a {vehicle_display_name}",
+    'match_details': "{match_type} on {map_display_name}",
+    'loading_match_state': "Loading into a match..",
+    'loading_match_details': "Loading into a match on {map_display_name}..",
+    'test_drive_state': "{vehicle_type_action} a {vehicle_display_name} (Test Drive)",
+    'test_drive_details': "In Test Drive on Western Europe",
+    'vehicle_br_text': "BR: {br_value}",
+    'vehicle_country_text': "({country_display_name})",
+}
 #endregion
 
 #region State Tracking Variables (for console logging to avoid redundant prints)
 _last_map_name = None
-_last_vehicle_name = None # Added for explicit vehicle change tracking
+_last_vehicle_name = None
 _last_objective = None
 _last_rpc_state = None
 _last_rpc_details = None
@@ -58,11 +90,12 @@ _last_rpc_large_image = None
 _last_rpc_small_image = None
 _last_rpc_large_text = None
 _last_rpc_small_text = None
-_last_rpc_update_timestamp = 0 # New: Tracks the last time RPC.update was called
+_last_rpc_update_timestamp = 0
+_current_activity_start_time = None
 #endregion
 
 #region Cache for Battle Ratings and Display Names
-BR_CACHE = {} # Stores {vehicle_name_for_url: (br_value, display_name_from_wiki)}
+BR_CACHE = {}
 #endregion
 
 #region Helper Functions
@@ -91,27 +124,12 @@ def get_vehicle_br_from_wiki(vehicle_name_for_url):
     # Define a list of potential wiki page paths to try
     candidate_wiki_paths = []
 
-    # 1. Common pattern: remove country prefix, replace underscores with hyphens, capitalize words
     candidate_wiki_paths.append(base_name.replace('_', '-').title())
-
-    # 2. Specific known full-caps names or unique formats not covered by general title()
-    # These are hardcoded overrides for specific vehicle names that don't follow general patterns
-    # REVERTED: Removed hardcoded overrides as the new parsing should handle them.
-    # if 'bmp-2m' in stripped_vehicle_name.lower():
-    #     candidate_wiki_paths.append('BMP-2M')
-    # ... (other specific overrides) ...
-
-    # 3. 'unit/' prefix with the original stripped vehicle name (often used for specific game units)
     candidate_wiki_paths.append(f"unit/{stripped_vehicle_name}")
-
-    # 4. Fallback: original base name with underscores (no title case)
     candidate_wiki_paths.append(base_name)
-
-    # 5. Fallback: base name with underscores and capitalized first letter of each part
     candidate_wiki_paths.append('_'.join([p.capitalize() for p in base_name.split('_')]))
 
-    # Iterate through candidate paths and try to fetch BR and display name
-    for wiki_path_name_attempt in list(set(candidate_wiki_paths)): # Use set to avoid duplicate attempts
+    for wiki_path_name_attempt in list(set(candidate_wiki_paths)):
         final_wiki_url_path = urllib.parse.quote(wiki_path_name_attempt)
         wiki_url = f"https://wiki.warthunder.com/{final_wiki_url_path}"
 
@@ -119,11 +137,10 @@ def get_vehicle_br_from_wiki(vehicle_name_for_url):
         display_name_from_wiki = None
 
         try:
-            response = requests.get(wiki_url, timeout=10)
-            response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
+            response = requests.get(wiki_url, timeout=20) 
+            response.raise_for_status()
             html_content = response.text
 
-            # Regex to find the BR value
             br_match = re.search(
                 r'<div class="game-unit_br-item">\s*<div class="mode">RB</div>\s*<div class="value">(.*?)</div>\s*</div>',
                 html_content,
@@ -131,9 +148,8 @@ def get_vehicle_br_from_wiki(vehicle_name_for_url):
             )
             if br_match:
                 br_value = br_match.group(1).strip()
-                br_value = re.sub(r'<.*?>', '', br_value) # Remove any HTML tags
+                br_value = re.sub(r'<.*?>', '', br_value)
 
-            # NEW: Attempt to extract vehicle name from <div class="game-unit_name">
             game_unit_name_match = re.search(
                 r'<div class="game-unit_name">(.*?)</div>',
                 html_content,
@@ -141,12 +157,10 @@ def get_vehicle_br_from_wiki(vehicle_name_for_url):
             )
             if game_unit_name_match:
                 raw_name = game_unit_name_match.group(1).strip()
-                # Clean up extracted name: unescape HTML, remove tags, replace non-breaking spaces
                 cleaned_name = html.unescape(re.sub(r'<.*?>', '', raw_name))
-                cleaned_name = cleaned_name.replace('\xa0', ' ') # Replace non-breaking space character
+                cleaned_name = cleaned_name.replace('\xa0', ' ')
                 display_name_from_wiki = cleaned_name.strip()
             else:
-                # Fallback to h1 tag if game-unit_name not found
                 name_match = re.search(
                     r'<h1[^>]*id="firstHeading"[^>]*>(.*?)<\/h1>',
                     html_content,
@@ -155,351 +169,509 @@ def get_vehicle_br_from_wiki(vehicle_name_for_url):
                 if name_match:
                     raw_name = name_match.group(1).strip()
                     cleaned_name = html.unescape(re.sub(r'<.*?>', '', raw_name))
-                    cleaned_name = cleaned_name.replace('\xa0', ' ') # Replace non-breaking space character
+                    cleaned_name = cleaned_name.replace('\xa0', ' ')
                     display_name_from_wiki = cleaned_name.strip()
 
             if br_value != "N/A" or display_name_from_wiki is not None:
-                # Cache the result and return
                 BR_CACHE[vehicle_name_for_url] = (br_value, display_name_from_wiki)
                 return br_value, display_name_from_wiki
 
         except (requests.exceptions.Timeout, requests.exceptions.RequestException):
-            # Ignore timeouts or request errors for this specific URL attempt, try next
+            logger.debug(f"Timeout or request error fetching BR/Name for {vehicle_name_for_url} from {wiki_url}")
             pass
         except Exception as e:
-            # Log unexpected parsing errors but continue trying other URLs
-            print(f"ERROR: Failed to parse BR/Name for {vehicle_name_for_url} from {wiki_url}: {e}")
+            logger.error(f"Failed to parse BR/Name for {vehicle_name_for_url} from {wiki_url}: {e}")
+            logger.debug(traceback.format_exc())
     
-    # If all attempts fail or no relevant data found
-    BR_CACHE[vehicle_name_for_url] = ("N/A", None) # Cache failure
+    BR_CACHE[vehicle_name_for_url] = ("N/A", None)
     return "N/A", None
+
+def _load_config_for_main():
+    """
+    Loads configuration from config.json for main.py when not run as frozen.
+    This is a simplified version for main.py's direct use.
+    """
+    config_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'config.json')
+    if os.path.exists(config_file):
+        try:
+            with open(config_file, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.JSONDecodeError as e:
+            logger.error(f"Error decoding config.json: {e}")
+        except Exception as e:
+            logger.error(f"Error loading config.json: {e}")
+    return {}
+
 #endregion
 
-#region Main RPC Update Loop
-while True:
+def run_rpc(client_id: str = None, custom_message_templates: dict = None):
+    """
+    Main function to run the War Thunder Discord Rich Presence.
+    This function contains the continuous loop for updating RPC.
+    
+    Args:
+        client_id (str): The Discord Application Client ID.
+        custom_message_templates (dict): Dictionary of custom message templates.
+    """
+    global _last_map_name, _last_vehicle_name, _last_objective, \
+           _last_rpc_state, _last_rpc_details, _last_rpc_large_image, \
+           _last_rpc_small_image, _last_rpc_large_text, _last_rpc_small_text, \
+           _last_rpc_update_timestamp, _current_activity_start_time, _rpc_running, RPC
+
+    logger.debug("Console logging level controlled by GUI.")
+
+    logger.debug(f"sys.path in run_rpc: {sys.path}")
+    logger.debug(f"Current working directory in run_rpc: {os.getcwd()}")
+
+    if client_id is None:
+        logger.error("Client ID was not provided to run_rpc. Exiting.")
+        return
+
+    RPC = Presence(client_id)
+
+    telem_interface = telemetry.TelemInterface()
+    
+    # Load templates: prioritize passed templates, then config file, then defaults
+    current_templates = DEFAULT_MESSAGE_TEMPLATES.copy()
+    if not custom_message_templates: # If no templates passed (e.g., when run directly)
+        config_from_file = _load_config_for_main()
+        for key, value in config_from_file.items():
+            if key in current_templates: # Only update known template keys
+                current_templates[key] = value
+    else: # If templates were passed from GUI (frozen mode)
+        current_templates.update(custom_message_templates)
+
+    logger.debug(f"Using message templates: {current_templates}")
+
     try:
-        #region Game State Check
-        is_connected = telem_interface.get_telemetry()
-        game_running = (telem_interface.status not in [telemetry.WT_NOT_RUNNING, telemetry.OTHER_ERROR])
+        logger.info("Attempting to connect to Discord RPC...")
+        RPC.connect()
+        logger.info("Successfully connected to Discord RPC.")
+    except exceptions.InvalidID:
+        logger.error(f"Invalid CLIENT_ID '{client_id}'. Please ensure it's correct and configured in Discord Developer Portal.")
+        return
+    except Exception as e:
+        logger.error(f"Failed to connect to Discord RPC: {e}. Is Discord running?")
+        logger.debug(traceback.format_exc())
+        return
 
-        if not game_running:
-            current_rpc_state = "Not running"
-            current_rpc_details = "Waiting for War Thunder..."
-            current_rpc_large_image = "logo"
-            current_rpc_large_text = "War Thunder"
-            current_rpc_small_image = None
-            current_rpc_small_text = None
+    _rpc_running = True
 
-            # Clear _last_map_name when game is not running
-            _last_map_name = None 
-            _last_vehicle_name = None # Also clear last vehicle name
+    while _rpc_running:
+        try:
+            #region Game State Check
+            is_connected = telem_interface.get_telemetry()
+            game_running = (telem_interface.status not in [telemetry.WT_NOT_RUNNING, telemetry.OTHER_ERROR])
 
-            # Always send RPC update when game is not running to ensure status is cleared/set
-            # Only print to console if there's a change or a periodic update
-            if (_last_rpc_state != current_rpc_state or _last_rpc_details != current_rpc_details or
-                _last_rpc_large_image != current_rpc_large_image or _last_rpc_large_text != current_rpc_large_text or
-                time.time() - _last_rpc_update_timestamp > 15): # Force update every 15 seconds for heartbeat
-                
-                print(f"War Thunder is {current_rpc_state.lower()}. {current_rpc_details}")
-                print(f"RPC Update (Not Running): Large Image='{current_rpc_large_image}', Small Image='{current_rpc_small_image}'")
-                
-                RPC.update(state=current_rpc_state, details=current_rpc_details, start=int(time.time()), large_image=current_rpc_large_image, large_text=current_rpc_large_text)
-                _last_rpc_update_timestamp = int(time.time()) # Update timestamp on successful RPC call
-            
-            # Update last state variables
-            _last_rpc_state, _last_rpc_details, _last_rpc_large_image, _last_rpc_small_image, _last_rpc_large_text, _last_rpc_small_text = \
-                current_rpc_state, current_rpc_details, current_rpc_large_image, current_rpc_small_image, current_rpc_large_text, current_rpc_small_text
-            
-            time.sleep(0.5) # Reduced sleep time
-            continue
-
-        # Force is_connected to True if in a recognized hangar/menu state
-        if telem_interface.status in [telemetry.IN_MENU, telemetry.NO_MISSION]:
-            is_connected = True
-        #endregion
-
-        #region Telemetry Data Processing
-        # Fetch raw telemetry data
-        api_speed_tas = telem_interface.state.get('TAS, km/h', 9999)
-        api_throttle1 = telem_interface.state.get('throttle 1, %', 9999)
-        api_altitude_h = telem_interface.state.get('H, m', 9999)
-        
-        isinVehicle = telem_interface.indicators.get('valid', False)
-        vehicleName = telem_interface.indicators.get('type', 'Unknown')
-        vehicleType = telem_interface.indicators.get('army', 'Unknown')
-
-        mainObjective = "false"
-        inMatch = False
-        if isinstance(telem_interface.full_telemetry.get("objectives"), list) and len(telem_interface.full_telemetry.get("objectives", [])) > 0:
-            inMatch = True # Considered in a match if any objective is present
-            mainObjective = telem_interface.full_telemetry["objectives"][0].get('text', "false")
-
-        currentMap = "UNKNOWN"
-        map_asset_key = "logo" # Default large image
-        if telem_interface.map_info.map_valid:
-            currentMap = telem_interface.map_info.grid_info.get('name', 'UNKNOWN') if telem_interface.map_info.grid_info else 'UNKNOWN'
-            map_asset_key = currentMap.lower().replace(' ', '_')
-            if map_asset_key == "unknown" or not map_asset_key: # Ensure it's not empty or "unknown"
-                map_asset_key = "logo"
-            
-            # Save map image if new and recognized
-            map_img_path_for_hash = os.path.join(telemetry.mapinfo.LOCAL_PATH, 'map.jpg')
-            # Only attempt to save if the map_asset_key is not 'hangar' and it's a new map
-            if os.path.exists(map_img_path_for_hash) and map_asset_key != _last_map_name and map_asset_key != 'hangar':
-                try:
-                    map_image_for_saving = Image.open(map_img_path_for_hash)
-                    save_path = os.path.join(MAP_PICTURES_DIR, f"{map_asset_key}.jpg")
-                    map_image_for_saving.save(save_path)
-                    _last_map_name = map_asset_key # Update _last_map_name only on successful save
-                except Exception as save_e:
-                    print(f"Error saving recognized map image: {save_e}")
-        else:
-            # If map info is not valid, ensure map_asset_key defaults to hangar/logo
-            currentMap = "Hangar" # Explicitly set currentMap for hangar context
-            map_asset_key = "hangar" # Default to hangar asset
-            _last_map_name = None # Clear last map name if map info is invalid
-            
-        # Process vehicle name for display and wiki lookup
-        strippedVehicleName = vehicleName.replace("tankModels/", "").replace("planeModels/", "")
-        encodedVehicleName = urllib.parse.quote(strippedVehicleName)
-
-        # Get Battle Rating and display name from wiki
-        br_value, wiki_display_name = "N/A", None
-        if strippedVehicleName and strippedVehicleName != 'Unknown' and "DUMMY" not in strippedVehicleName.upper():
-            br_value, wiki_display_name = get_vehicle_br_from_wiki(strippedVehicleName)
-
-        truncatedVehicleNameForDisplay = ""
-        country_code_display = ""
-        
-        # Always calculate country_code_display based on strippedVehicleName
-        parts = strippedVehicleName.split('_')
-        if len(parts) > 1 and parts[0] in COUNTRY_PREFIXES:
-            country_code_raw = parts[0]
-            country_code_display = f" ({COUNTRY_DISPLAY_MAP.get(country_code_raw, country_code_raw.upper())})"
-        else:
-            country_code_display = "" # No country prefix to display
-
-        # Prioritize wiki_display_name if available and clean
-        if wiki_display_name:
-            truncatedVehicleNameForDisplay = wiki_display_name
-        else:
-            # Fallback to formatting from API name if wiki_display_name is not available
-            base_name_for_display = strippedVehicleName
-            if len(parts) > 1 and parts[0] in COUNTRY_PREFIXES:
-                base_name_for_display = '_'.join(parts[1:])
-            truncatedVehicleNameForDisplay = base_name_for_display.replace('_', ' ').title()
-
-
-        vehicle_br_text = ""
-        if br_value and br_value != "N/A":
-            vehicle_br_text = f"\nBR: {br_value}"
-        #endregion
-
-        #region RPC State Determination
-        condition_hangar = telem_interface.status in [telemetry.IN_MENU, telemetry.NO_MISSION] or \
-                           (telem_interface.status == telemetry.IN_FLIGHT and \
-                            abs(api_speed_tas) < 5 and abs(telem_interface.indicators.get('speed', 9999)) < 5 and \
-                            api_throttle1 < 5 and api_altitude_h < 100)
-        
-        condition_in_match_robust = telem_interface.map_info.map_valid and (currentMap != 'Hangar')
-
-        if currentMap == "Test Drive": # Condition for Test Drive
-            # Determine vehicle-specific state for Test Drive
-            if vehicleType == "tank":
-                current_rpc_state = f"Driving a {truncatedVehicleNameForDisplay} (Test Drive)"
-            elif vehicleType == "air":
-                current_rpc_state = f"Piloting a {truncatedVehicleNameForDisplay} (Test Drive)"
-            else:
-                current_rpc_state = f"In Test Drive ({truncatedVehicleNameForDisplay})" # Fallback for other types
-            
-            current_rpc_details = f"In Test Drive on Western Europe"
-            current_rpc_large_image = "western_europe" 
-            current_rpc_large_text = "Western Europe"
-            current_rpc_small_image = f"https://encyclopedia.warthunder.com/i/images/{encodedVehicleName}.png"
-            current_rpc_small_text = f"{truncatedVehicleNameForDisplay}{country_code_display}{vehicle_br_text}"
-        elif condition_in_match_robust:
-            # Determine vehicle type for RPC state and details
-            is_air_vehicle = (vehicleType == "air" or 
-                              (vehicleType == "Unknown" and telem_interface.indicators.get('icon', '').lower() in ['bomber', 'fighter', 'assault', 'heavy_fighter', 'attacker']) or
-                              (telem_interface.indicators.get('type', '').lower().startswith('plane'))) 
-            
-            is_tank_vehicle = (vehicleType == "tank")
-            
-            is_naval_vehicle = (vehicleType == "ship" or
-                                (vehicleType == "Unknown" and telem_interface.indicators.get('icon', '').lower() in ['ship', 'torpedoboat']) or
-                                (telem_interface.indicators.get('type', '').lower().startswith('ship'))) 
-
-            # Set current_rpc_state based on vehicle type
-            if is_air_vehicle:
-                current_rpc_state = f"Piloting a {truncatedVehicleNameForDisplay}"
-            elif is_tank_vehicle:
-                current_rpc_state = f"Driving a {truncatedVehicleNameForDisplay}"
-            elif is_naval_vehicle:
-                current_rpc_state = f"Commanding a {truncatedVehicleNameForDisplay}"
-            else:
-                current_rpc_state = f"{truncatedVehicleNameForDisplay}" # Fallback
-
-            # Now determine current_rpc_details based on match objectives or inferred type
-            if inMatch: # Actual in-match with objectives
-                if is_air_vehicle:
-                    if mainObjective.startswith("Capture and maintain superiority over the airfields") or \
-                       mainObjective.startswith("Capture and hold airfields.") or \
-                       mainObjective.startswith("Capture and maintain superiority over the air zone") or \
-                       mainObjective.startswith("Capture and hold the airfield"):
-                        current_rpc_details = f"Air Domination Match on {currentMap}"
-                    elif mainObjective.startswith("Destroy the enemy ground vehicles"):
-                        current_rpc_details = f"Air Ground Strike Match on {currentMap}"
-                    elif mainObjective.startswith("Destroy the highlighted targets"):
-                        current_rpc_details = f"Air Frontline Match on {currentMap}"
-                    elif mainObjective.startswith("Capture and maintain superiority over the points") or \
-                         mainObjective.startswith("Capture the enemy point") or \
-                         mainObjective.startswith("Prevent capture of allied point") or \
-                         mainObjective.startswith("Capture and keep hold of the point"):
-                        current_rpc_details = f"Air/Ground Mixed Battle on {currentMap}"
-                    elif mainObjective and mainObjective != "false": # This is the "Air Operations" catch-all
-                        current_rpc_details = f"Air Operations Match on {currentMap}"
-                    else:
-                        current_rpc_details = f"Air Match on {currentMap}" # Default for air if no specific objective text
-                elif is_tank_vehicle:
-                    if mainObjective.startswith("Capture and maintain superiority over the points"):
-                        current_rpc_details = f"Ground Domination Match on {currentMap}"
-                    elif mainObjective.startswith("Capture the enemy point") or \
-                         mainObjective.startswith("Prevent the capture of the allied point"):
-                        current_rpc_details = f"Ground Battle Match on {currentMap}"
-                    elif mainObjective.startswith("Capture and keep hold of the point"):
-                        current_rpc_details = f"Ground Conquest Match on {currentMap}"
-                    elif mainObjective and mainObjective != "false":
-                        current_rpc_details = f"Ground Operations Match on {currentMap}"
-                    else:
-                        current_rpc_details = f"Ground Match on {currentMap}"
-                elif is_naval_vehicle:
-                    if mainObjective.startswith("Capture and maintain superiority over the points") or \
-                       mainObjective.startswith("Capture the enemy point") or \
-                       mainObjective.startswith("Prevent capture of allied point") or \
-                       mainObjective.startswith("Capture and keep hold of the point"):
-                        current_rpc_details = f"Naval Domination Match on {currentMap}"
-                    elif mainObjective and mainObjective != "false":
-                        current_rpc_details = f"Naval Operations Match on {currentMap}"
-                    else:
-                        current_rpc_details = f"Naval Match on {currentMap}"
-                else: # Fallback for other vehicle types with objectives
-                    current_rpc_details = f"Match on {currentMap}"
-            else: # Map valid, not Hangar, but no objectives (e.g., loading screen, or match with no objectives in telemetry)
-                if "DUMMY" in vehicleName.upper(): # Common placeholder for loading
-                    current_rpc_state = "Loading into a match.." # Set state here for loading
-                    current_rpc_details = f"Loading into a match on {currentMap}.." 
-                elif is_air_vehicle: # Explicitly set to Air Match if it's an air vehicle but no objectives
-                    current_rpc_details = f"Air Match on {currentMap}"
-                elif is_tank_vehicle: # Explicitly set to Ground Match if it's a tank vehicle but no objectives
-                    current_rpc_details = f"Ground Match on {currentMap}"
-                elif is_naval_vehicle: # Explicitly set to Naval Match if it's a naval vehicle but no objectives
-                    current_rpc_details = f"Naval Match on {currentMap}"
-                else: # Fallback for other vehicle types or unknown in a non-objective match
-                    current_rpc_details = f"Match on {currentMap}"
-
-            # Set large/small image and text based on the determined state
-            current_rpc_large_image = map_asset_key
-            current_rpc_large_text = currentMap
-            current_rpc_small_image = f"https://encyclopedia.warthunder.com/i/images/{encodedVehicleName}.png"
-            current_rpc_small_text = f"{truncatedVehicleNameForDisplay}{country_code_display}{vehicle_br_text}"
-
-        elif condition_hangar: # In hangar or menu
-            current_rpc_state = "In the hangar"
-            current_rpc_large_image = "hangar" # Always use "hangar" asset in hangar
-            current_rpc_large_text = "In the Hangar"
-            
-            if isinVehicle and strippedVehicleName and strippedVehicleName != 'Unknown' and "DUMMY" not in strippedVehicleName.upper():
-                current_rpc_details = f"Looking at {truncatedVehicleNameForDisplay}"
-                current_rpc_small_image = f"https://encyclopedia.warthunder.com/i/images/{encodedVehicleName}.png"
-                current_rpc_small_text = f"{truncatedVehicleNameForDisplay}{country_code_display}{vehicle_br_text}"
-            else:
-                current_rpc_details = "Browsing vehicles..."
+            if not game_running:
+                current_rpc_state = "Not running"
+                current_rpc_details = "Waiting for War Thunder..."
+                current_rpc_large_image = "logo"
+                current_rpc_large_text = "War Thunder"
                 current_rpc_small_image = None
                 current_rpc_small_text = None
+                _current_activity_start_time = None
 
-        else: # Unhandled or transient states
-            current_rpc_state = "In-game"
-            current_rpc_details = "Unknown activity"
+                _last_map_name = None 
+                _last_vehicle_name = None
+
+                if (_last_rpc_state != current_rpc_state or _last_rpc_details != current_rpc_details or
+                    _last_rpc_large_image != current_rpc_large_image or _last_rpc_large_text != current_rpc_large_text or
+                    time.time() - _last_rpc_update_timestamp > 30): # Force update every 30 seconds for heartbeat
+                    
+                    logger.info(f"War Thunder is {current_rpc_state.lower()}. {current_rpc_details}")
+                    
+                    payload = {
+                        "state": current_rpc_state,
+                        "details": current_rpc_details,
+                        "start": int(time.time()),
+                        "large_image": current_rpc_large_image,
+                        "large_text": current_rpc_large_text,
+                        "small_image": current_rpc_small_image,
+                        "small_text": current_rpc_small_text
+                    }
+                    logger.debug(f"Attempting RPC update with payload (Not Running): {payload}")
+                    
+                    try:
+                        RPC.update(**payload)
+                        logger.debug("RPC update successful for 'Not Running' state.")
+                    except exceptions.PipeClosed:
+                        logger.error("Discord pipe closed. Discord might have been closed or restarted. Attempting to reconnect on next loop.")
+                        RPC = None
+                    except Exception as rpc_e:
+                        logger.error(f"Failed to send RPC update for 'Not Running' state: {rpc_e}")
+                        logger.debug(traceback.format_exc())
+
+                    _last_rpc_update_timestamp = int(time.time())
+
+                _last_rpc_state, _last_rpc_details, _last_rpc_large_image, _last_rpc_small_image, _last_rpc_large_text, _last_rpc_small_text = \
+                    current_rpc_state, current_rpc_details, current_rpc_large_image, current_rpc_small_image, current_rpc_large_text, current_rpc_small_text
+                
+                time.sleep(1)
+                continue
+
+            # Log the current connection status before the RPC update logic
+            logger.debug(f"Telemetry Connection Status: is_connected={is_connected}, telem_interface.status={STATUS_MESSAGES.get(telem_interface.status, 'Unknown Status')}")
+
+            #region Telemetry Data Processing
+            api_speed_tas = telem_interface.state.get('TAS, km/h', 9999)
+            api_throttle1 = telem_interface.state.get('throttle 1, %', 9999)
+            api_altitude_h = telem_interface.state.get('H, m', 9999)
+            
+            isinVehicle = telem_interface.indicators.get('valid', False)
+            vehicleName = telem_interface.indicators.get('type', 'Unknown')
+            vehicleType = telem_interface.indicators.get('army', 'Unknown')
+
+            mainObjective = "false"
+            inMatch = False
+            if isinstance(telem_interface.full_telemetry.get("objectives"), list) and len(telem_interface.full_telemetry.get("objectives", [])) > 0:
+                inMatch = True
+                mainObjective = telem_interface.full_telemetry["objectives"][0].get('text', "false")
+
+            currentMap = "UNKNOWN"
+            map_asset_key = "logo"
+            if telem_interface.map_info.map_valid:
+                currentMap = telem_interface.map_info.grid_info.get('name', 'UNKNOWN') if telem_interface.map_info.grid_info else 'UNKNOWN'
+                map_asset_key = currentMap.lower().replace(' ', '_')
+                if map_asset_key == "unknown" or not map_asset_key:
+                    map_asset_key = "logo"
+                
+                map_img_path_for_hash = os.path.join(telemetry.mapinfo.LOCAL_PATH, 'map.jpg')
+                if os.path.exists(map_img_path_for_hash) and map_asset_key != _last_map_name and map_asset_key != 'hangar':
+                    try:
+                        map_image_for_saving = Image.open(map_img_path_for_hash)
+                        # Use the MAP_PICTURES_DIR defined at the top of main.py
+                        save_path = os.path.join(MAP_PICTURES_DIR, f"{map_asset_key}.jpg") 
+                        map_image_for_saving.save(save_path)
+                    except Exception as save_e:
+                        logger.error(f"Error saving recognized map image: {save_e}")
+            else:
+                currentMap = "Hangar"
+                map_asset_key = "hangar"
+                _last_map_name = None
+                
+            strippedVehicleName = vehicleName.replace("tankModels/", "").replace("planeModels/", "")
+            encodedVehicleName = urllib.parse.quote(strippedVehicleName)
+
+            br_value, wiki_display_name = "N/A", None
+            if strippedVehicleName and strippedVehicleName != 'Unknown' and "DUMMY" not in strippedVehicleName.upper():
+                br_value, wiki_display_name = get_vehicle_br_from_wiki(strippedVehicleName)
+
+            truncatedVehicleNameForDisplay = ""
+            country_code_display = ""
+            country_display_name_raw = ""
+            
+            parts = strippedVehicleName.split('_')
+            if len(parts) > 1 and parts[0] in COUNTRY_PREFIXES:
+                country_code_raw = parts[0]
+                country_display_name_raw = COUNTRY_DISPLAY_MAP.get(country_code_raw, country_code_raw.upper())
+                country_code_display = current_templates['vehicle_country_text'].format(country_display_name=country_display_name_raw)
+            else:
+                country_code_display = ""
+
+            if wiki_display_name:
+                truncatedVehicleNameForDisplay = wiki_display_name
+            else:
+                base_name_for_display = strippedVehicleName
+                if len(parts) > 1 and parts[0] in COUNTRY_PREFIXES:
+                    base_name_for_display = '_'.join(parts[1:])
+                truncatedVehicleNameForDisplay = base_name_for_display.replace('_', ' ').title()
+
+
+            vehicle_br_text = ""
+            if br_value and br_value != "N/A":
+                vehicle_br_text = current_templates['vehicle_br_text'].format(br_value=br_value)
+            #endregion
+
+            #region RPC State Determination
+            condition_hangar = telem_interface.status in [telemetry.IN_MENU, telemetry.NO_MISSION] or \
+                               (telem_interface.status == telemetry.IN_FLIGHT and \
+                                abs(api_speed_tas) < 5 and abs(telem_interface.indicators.get('speed', 9999)) < 5 and \
+                                api_throttle1 < 5 and api_altitude_h < 100)
+            
+            condition_in_match_robust = telem_interface.map_info.map_valid and (currentMap != 'Hangar')
+
+            # Data for template formatting
+            template_data = {
+                'vehicle_display_name': truncatedVehicleNameForDisplay,
+                'map_display_name': currentMap,
+                'br_value': br_value,
+                'country_display_name': country_display_name_raw,
+                'vehicle_type_action': "", # Will be set below
+                'match_type': "", # Will be set below
+            }
+
+            if currentMap == "Test Drive":
+                if vehicleType == "tank":
+                    template_data['vehicle_type_action'] = "Driving"
+                elif vehicleType == "air":
+                    template_data['vehicle_type_action'] = "Piloting"
+                else:
+                    template_data['vehicle_type_action'] = "In" # Generic for unknown type in test drive
+
+                current_rpc_state = current_templates['test_drive_state'].format(**template_data)
+                current_rpc_details = current_templates['test_drive_details'].format(**template_data)
+                current_rpc_large_image = "western_europe" 
+                current_rpc_large_text = "Western Europe"
+                current_rpc_small_image = f"https://encyclopedia.warthunder.com/i/images/{encodedVehicleName}.png"
+                current_rpc_small_text = f"{truncatedVehicleNameForDisplay}{country_code_display}{vehicle_br_text}"
+
+            elif condition_in_match_robust:
+                is_air_vehicle = (vehicleType == "air" or 
+                                  (vehicleType == "Unknown" and telem_interface.indicators.get('icon', '').lower() in ['bomber', 'fighter', 'assault', 'heavy_fighter', 'attacker']) or
+                                  (vehicleType == "Unknown" and telem_interface.indicators.get('type', '').lower().startswith('plane'))) 
+                
+                is_tank_vehicle = (vehicleType == "tank")
+                
+                is_naval_vehicle = (vehicleType == "ship" or
+                                    (vehicleType == "Unknown" and telem_interface.indicators.get('icon', '').lower() in ['ship', 'torpedoboat']) or
+                                    (vehicleType == "Unknown" and telem_interface.indicators.get('type', '').lower().startswith('ship'))) 
+
+                if is_air_vehicle:
+                    template_data['vehicle_type_action'] = "Piloting"
+                elif is_tank_vehicle:
+                    template_data['vehicle_type_action'] = "Driving"
+                elif is_naval_vehicle:
+                    template_data['vehicle_type_action'] = "Commanding"
+                else:
+                    template_data['vehicle_type_action'] = "In" # Generic for unknown type in match
+
+                current_rpc_state = current_templates['match_state'].format(**template_data)
+
+                if inMatch:
+                    if is_air_vehicle:
+                        if mainObjective.startswith("Capture and maintain superiority over the airfields") or \
+                           mainObjective.startswith("Capture and hold airfields.") or \
+                           mainObjective.startswith("Capture and maintain superiority over the air zone") or \
+                           mainObjective.startswith("Capture and hold the airfield"):
+                            template_data['match_type'] = "Air Domination Match"
+                        elif mainObjective.startswith("Destroy the enemy ground vehicles"):
+                            template_data['match_type'] = "Air Ground Strike Match"
+                        elif mainObjective.startswith("Destroy the highlighted targets"):
+                            template_data['match_type'] = "Air Frontline Match"
+                        elif mainObjective.startswith("Capture and maintain superiority over the points") or \
+                             mainObjective.startswith("Capture the enemy point") or \
+                             mainObjective.startswith("Prevent capture of allied point") or \
+                             mainObjective.startswith("Capture and keep hold of the point"):
+                            template_data['match_type'] = "Air/Ground Mixed Battle"
+                        elif mainObjective and mainObjective != "false":
+                            template_data['match_type'] = "Air Operations Match"
+                        else:
+                            template_data['match_type'] = "Air Match"
+                    elif is_tank_vehicle:
+                        if mainObjective.startswith("Capture and maintain superiority over the points"):
+                            template_data['match_type'] = "Ground Domination Match"
+                        elif mainObjective.startswith("Capture the enemy point") or \
+                             mainObjective.startswith("Prevent the capture of the allied point"):
+                            template_data['match_type'] = "Ground Battle Match"
+                        elif mainObjective.startswith("Capture and keep hold of the point"):
+                            template_data['match_type'] = "Ground Conquest Match"
+                        elif mainObjective and mainObjective != "false":
+                            template_data['match_type'] = "Ground Operations Match"
+                        else:
+                            template_data['match_type'] = "Ground Match"
+                    elif is_naval_vehicle:
+                        if mainObjective.startswith("Capture and maintain superiority over the points"):
+                            template_data['match_type'] = "Naval Domination Match"
+                        elif mainObjective.startswith("Capture the enemy point") or \
+                           mainObjective.startswith("Prevent capture of allied point") or \
+                           mainObjective.startswith("Capture and keep hold of the point"):
+                            template_data['match_type'] = "Naval Domination Match"
+                        elif mainObjective and mainObjective != "false":
+                            template_data['match_type'] = "Naval Operations Match"
+                        else:
+                            template_data['match_type'] = "Naval Match"
+                    else:
+                        template_data['match_type'] = "Match"
+                    current_rpc_details = current_templates['match_details'].format(**template_data)
+                else:
+                    if "DUMMY" in vehicleName.upper():
+                        current_rpc_state = current_templates['loading_match_state'].format(**template_data)
+                        current_rpc_details = current_templates['loading_match_details'].format(**template_data)
+                    elif is_air_vehicle:
+                        template_data['match_type'] = "Air Match"
+                        current_rpc_details = current_templates['match_details'].format(**template_data)
+                    elif is_tank_vehicle:
+                        template_data['match_type'] = "Ground Match"
+                        current_rpc_details = current_templates['match_details'].format(**template_data)
+                    elif is_naval_vehicle:
+                        template_data['match_type'] = "Naval Match"
+                        current_rpc_details = current_templates['match_details'].format(**template_data)
+                    else:
+                        template_data['match_type'] = "Match"
+                        current_rpc_details = current_templates['match_details'].format(**template_data)
+
+                current_rpc_large_image = map_asset_key
+                current_rpc_large_text = currentMap
+                current_rpc_small_image = f"https://encyclopedia.warthunder.com/i/images/{encodedVehicleName}.png"
+                current_rpc_small_text = f"{truncatedVehicleNameForDisplay}{country_code_display}{vehicle_br_text}"
+
+            elif condition_hangar:
+                current_rpc_state = current_templates['hangar_state'].format(**template_data)
+                current_rpc_large_image = "hangar"
+                current_rpc_large_text = "In the Hangar"
+                
+                if isinVehicle and strippedVehicleName and strippedVehicleName != 'Unknown' and "DUMMY" not in strippedVehicleName.upper():
+                    current_rpc_details = current_templates['hangar_details'].format(**template_data)
+                    current_rpc_small_image = f"https://encyclopedia.warthunder.com/i/images/{encodedVehicleName}.png"
+                    current_rpc_small_text = f"{truncatedVehicleNameForDisplay}{country_code_display}{vehicle_br_text}"
+                else:
+                    current_rpc_details = current_templates['hangar_details_browsing'].format(**template_data)
+                    current_rpc_small_image = None
+                    current_rpc_small_text = None
+
+            else:
+                current_rpc_state = "In-game (Unknown State)"
+                current_rpc_details = "Waiting for War Thunder data..."
+                current_rpc_large_image = "logo"
+                current_rpc_large_text = "War Thunder"
+                current_rpc_small_image = None
+                current_rpc_small_text = None
+            #endregion
+
+            #region Update Discord Rich Presence
+            log_to_console = False
+            
+            current_activity_signature = (
+                current_rpc_state,
+                current_rpc_details,
+                current_rpc_large_image,
+                current_rpc_small_image,
+                current_rpc_large_text,
+                current_rpc_small_text
+            )
+
+            last_activity_signature = (
+                _last_rpc_state,
+                _last_rpc_details,
+                _last_rpc_large_image,
+                _last_rpc_small_image,
+                _last_rpc_large_text,
+                _last_rpc_small_text
+            )
+
+            if current_activity_signature != last_activity_signature:
+                _current_activity_start_time = int(time.time())
+                log_to_console = True
+                logger.info("Activity changed, resetting timer.")
+            elif _current_activity_start_time is None:
+                _current_activity_start_time = int(time.time())
+                log_to_console = True
+                logger.info("Initial activity detected, starting timer.")
+            elif time.time() - _last_rpc_update_timestamp > 30:
+                log_to_console = True
+
+
+            if is_connected:
+                if telem_interface.status in [telemetry.IN_MENU, telemetry.NO_MISSION]:
+                    time.sleep(1) 
+
+                payload_to_log = {
+                    "state": current_rpc_state,
+                    "details": current_rpc_details,
+                    "start": _current_activity_start_time,
+                    "large_image": current_rpc_large_image,
+                    "large_text": current_rpc_large_text,
+                    "small_image": current_rpc_small_image,
+                    "small_text": current_rpc_small_text
+                }
+                
+                if log_to_console:
+                    logger.debug(f"Attempting RPC update with payload: {payload_to_log}") 
+                
+                try:
+                    RPC.update(**payload_to_log)
+                    if log_to_console:
+                        logger.debug("RPC update successful.") 
+                except exceptions.PipeClosed:
+                    logger.error("Discord pipe closed. Discord might have been closed or restarted. Attempting to reconnect on next loop.")
+                    RPC = None
+                except Exception as rpc_e:
+                    logger.error(f"Failed to send RPC update: {rpc_e}")
+                    logger.debug(traceback.format_exc())
+                
+                if log_to_console:
+                    logger.info(f"Updated Presence: State='{current_rpc_state}', Details='{current_rpc_details}'")
+                    logger.debug(f"Vehicle='{truncatedVehicleNameForDisplay}{country_code_display}', BR='{vehicle_br_text.strip()}'")
+                    logger.debug(f"RPC Update Sent: Large Image='{current_rpc_large_image}', Small Image='{current_rpc_small_image}'") 
+
+                _last_rpc_update_timestamp = int(time.time())
+
+            _last_rpc_state = current_rpc_state
+            _last_rpc_details = current_rpc_details
+            _last_rpc_large_image = current_rpc_large_image
+            _last_rpc_small_image = current_rpc_small_image
+            _last_rpc_large_text = current_rpc_large_text
+            _last_rpc_small_text = current_rpc_small_text
+            _last_vehicle_name = strippedVehicleName
+            #endregion
+
+        #region Error Handling for Main Loop
+        except Exception as e:
+            logger.error(f"An unexpected error occurred in the main loop: {e}")
+            logger.debug(traceback.format_exc())
+            
+            current_rpc_state = "Error occurred"
+            current_rpc_details = "Waiting for game to restart"
             current_rpc_large_image = "logo"
             current_rpc_large_text = "War Thunder"
             current_rpc_small_image = None
             current_rpc_small_text = None
-        #endregion
-
-        #region Update Discord Rich Presence
-        # Determine if a console log is needed (only on actual content change or periodic heartbeat)
-        log_to_console = False
-        if (_last_rpc_state != current_rpc_state or _last_rpc_details != current_rpc_details or
-            _last_rpc_large_image != current_rpc_large_image or _last_rpc_small_image != current_rpc_small_image or
-            _last_rpc_large_text != current_rpc_large_text or current_rpc_small_text != _last_rpc_small_text or
-            _last_vehicle_name != strippedVehicleName or # Explicit check for vehicle name change
-            time.time() - _last_rpc_update_timestamp > 15): # Force update every 15 seconds for console log
-            log_to_console = True
-
-        # Always send RPC update when game is running and connected
-        if is_connected:
-            # Add a small delay before updating RPC, especially in hangar state
-            if condition_hangar:
-                time.sleep(1) 
-
-            RPC.update(
-                state=current_rpc_state,
-                details=current_rpc_details,
-                start=int(time.time()), # Update start time on every RPC update
-                large_image=current_rpc_large_image,
-                large_text=current_rpc_large_text,
-                small_image=current_rpc_small_image,
-                small_text=current_rpc_small_text
-            )
+            _current_activity_start_time = None
             
-            if log_to_console:
-                print(f"Updated Presence: State='{current_rpc_state}', Details='{current_rpc_details}', Vehicle='{truncatedVehicleNameForDisplay}{country_code_display}', BR='{vehicle_br_text.strip()}'")
-                print(f"RPC Update Sent: Large Image='{current_rpc_large_image}', Small Image='{current_rpc_small_image}'")
+            _last_map_name = None 
+            _last_vehicle_name = None
 
-            _last_rpc_update_timestamp = int(time.time()) # Update timestamp on successful RPC call
+            if (_last_rpc_state != current_rpc_state or _last_rpc_details != current_rpc_details or
+                _last_rpc_large_image != current_rpc_large_image or _last_rpc_large_text != current_rpc_large_text or
+                time.time() - _last_rpc_update_timestamp > 30):
+                
+                logger.info(f"RPC Update (Error State): Large Image='{current_rpc_large_image}', Small Image='{current_rpc_small_image}'")
+                payload = {
+                    "state": current_rpc_state,
+                    "details": current_rpc_details,
+                    "start": int(time.time()),
+                    "large_image": current_rpc_large_image,
+                    "large_text": current_rpc_large_text,
+                    "small_image": current_rpc_small_image,
+                    "small_text": current_rpc_small_text
+                }
+                logger.debug(f"RPC Payload (Error State): {payload}")
+                try:
+                    RPC.update(**payload)
+                    logger.debug("RPC update successful for 'Error' state.")
+                except exceptions.PipeClosed:
+                    logger.error("Discord pipe closed during error state. Attempting to reconnect on next loop.")
+                    RPC = None
+                except Exception as rpc_e:
+                    logger.error(f"Failed to send RPC update for 'Error' state: {rpc_e}")
+                    logger.debug(traceback.format_exc())
 
-
-        # Update last state variables for the next loop iteration
-        _last_rpc_state = current_rpc_state
-        _last_rpc_details = current_rpc_details
-        _last_rpc_large_image = current_rpc_large_image
-        _last_rpc_small_image = current_rpc_small_image
-        _last_rpc_large_text = current_rpc_large_text
-        _last_rpc_small_text = current_rpc_small_text
-        _last_vehicle_name = strippedVehicleName # Update last vehicle name
-        #endregion
-
-    #region Error Handling for Main Loop
+                _last_rpc_update_timestamp = int(time.time())
+            
+            _last_rpc_state = current_rpc_state
+            _last_rpc_details = current_rpc_details
+            _last_rpc_large_image = current_rpc_large_image
+            _last_rpc_small_image = current_rpc_small_image
+            _last_rpc_large_text = current_rpc_large_text
+            _last_rpc_small_text = current_rpc_small_text
+            
+        time.sleep(1)
+    logger.info("RPC loop terminated.")
+    try:
+        if RPC:
+            RPC.close()
+            logger.info("Disconnected from Discord RPC.")
     except Exception as e:
-        print(f"An unexpected error occurred in the main loop: {e}")
-        traceback.print_exc()
-        # Fallback RPC state in case of an error
-        current_rpc_state = "Error occurred"
-        current_rpc_details = "Waiting for game to restart"
-        current_rpc_large_image = "logo"
-        current_rpc_large_text = "War Thunder"
-        current_rpc_small_image = None
-        current_rpc_small_text = None
-        
-        # Clear _last_map_name and _last_vehicle_name on error
-        _last_map_name = None 
-        _last_vehicle_name = None
+        logger.error(f"Error disconnecting from Discord RPC: {e}")
+        logger.debug(traceback.format_exc())
 
-        # Always send RPC update on error to clear/set status, but only log if changed or periodic
-        if (_last_rpc_state != current_rpc_state or _last_rpc_details != current_rpc_details or
-            _last_rpc_large_image != current_rpc_large_image or _last_rpc_large_text != current_rpc_large_text or
-            time.time() - _last_rpc_update_timestamp > 15): # Force update every 15 seconds even on error
-            
-            print(f"RPC Update (Error State): Large Image='{current_rpc_large_image}', Small Image='{current_rpc_small_image}'")
-            RPC.update(state=current_rpc_state, details=current_rpc_details, start=int(time.time()), large_image=current_rpc_large_image, large_text=current_rpc_large_text)
-            _last_rpc_update_timestamp = int(time.time()) # Update timestamp on successful RPC call
-        
-        _last_rpc_state = current_rpc_state
-        _last_rpc_details = current_rpc_details
-        _last_rpc_large_image = current_rpc_large_image
-        _last_rpc_small_image = current_rpc_small_image
-        _last_rpc_large_text = current_rpc_large_text
-        _last_rpc_small_text = current_rpc_small_text
-        
-    time.sleep(0.5) # Reduced sleep time
-    #endregion
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="War Thunder RPC Script")
+    parser.add_argument("--client-id", type=str, help="Discord Application Client ID")
+    args = parser.parse_args()
+
+    # When main.py is run directly (not via gui_launcher), it will load its own config
+    # The custom_message_templates will be None in this case, triggering the _load_config_for_main
+    run_rpc(client_id=args.client_id)
