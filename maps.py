@@ -75,6 +75,12 @@ maps = {
         "ULHC_lon": 159.61888231748685,
         "size_km": 65
     },
+    "Hurtgen": {
+        "hashes": ["0000c0c0b3fbff3e"],
+        "ULHC_lat": 50.95512512075716,
+        "ULHC_lon": 5.878575498271389,
+        "size_km": 65
+    },
     "Battle of Hurtgen Forest": {
         "hashes": ["181a72fcc5e1c103"],
         "ULHC_lat": 50.95512512075716,
@@ -87,12 +93,6 @@ maps = {
         "ULHC_lon": 0.0,
         "size_km": 65
     },
-    "Karelia": {
-        "hashes": ["fcbcfef8f87cfce0"],
-        "ULHC_lat": 0.0,
-        "ULHC_lon": 0.0,
-        "size_km": 65
-    },
     "Carpathians": {
         "hashes": ["003cf9f3f0e2d22c", "0080e0703f8f3fff"],
         "ULHC_lat": 0.0,
@@ -100,9 +100,15 @@ maps = {
         "size_km": 65
     },
     "Kuban": {
-        "hashes": ["fffeed614361e160"],
+        "hashes": ["fffeed614361e160", "f8f87f7f3f070300"],
         "ULHC_lat": 45.04056357844995,
         "ULHC_lon": 38.15663550630323,
+        "size_km": 65
+    },
+    "Mozdok. Winter 1943": {
+        "hashes": ["fffff3bf0f07008c"],
+        "ULHC_lat": 43.74723024511662,
+        "ULHC_lon": 45.530795428447014,
         "size_km": 65
     },
     "Mozdok": {
