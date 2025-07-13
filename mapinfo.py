@@ -164,8 +164,9 @@ def get_grid_info(map_img: Image) -> dict:
             {'name': 'Kursk',
              'ULHC_lat': 51.16278580067218,
              'ULHC_lon': 36.906235369488115,
-             'size_km' : 65},
-        Returns a default "UNKNOWN" dictionary if no match is found within MAX_HAMMING_DIST.
+             'size_km' : 65,
+             'detected_hash': 'abcdef1234567890'},
+        Returns a default "UNKNOWN" dictionary with the detected hash if no match is found.
     '''
 
     current_image_hash = None # Initialize to None
@@ -175,13 +176,13 @@ def get_grid_info(map_img: Image) -> dict:
     except Exception as e:
         print(f"ERROR: Failed to generate image hash for map. This might happen with corrupted map images or if War Thunder API returns an invalid image. Error: {e}")
         traceback.print_exc()
-        # If hashing fails, return UNKNOWN immediately
-        return {"name": "UNKNOWN", "ULHC_lat": 0.0, "ULHC_lon": 0.0, "size_km" : 65}
+        # If hashing fails, return UNKNOWN immediately with a placeholder hash
+        return {"name": "UNKNOWN", "ULHC_lat": 0.0, "ULHC_lon": 0.0, "size_km" : 65, "detected_hash": "ERROR_HASH"}
     
     # --- Special handling for Test Drive map ---
     if current_image_hash - TEST_DRIVE_HASH <= 0: # Check for exact or very close match
         print("DEBUG: parse_map_metadata: Test Drive map recognized.")
-        return {"name": "Test Drive", "ULHC_lat": 0.0, "ULHC_lon": 0.0, "size_km": 65}
+        return {"name": "Test Drive", "ULHC_lat": 0.0, "ULHC_lon": 0.0, "size_km": 65, "detected_hash": str(current_image_hash)}
 
 
     # Initialize with a distance greater than MAX_HAMMING_DIST to ensure any valid match is better
@@ -192,8 +193,15 @@ def get_grid_info(map_img: Image) -> dict:
     for map_name, map_data in maps.items():
         if "hashes" in map_data and isinstance(map_data["hashes"], list):
             for stored_hash_str in map_data["hashes"]:
-                # Convert the stored hexadecimal hash string back to an ImageHash object
-                stored_image_hash = imagehash.hex_to_hash(stored_hash_str)
+                # Skip empty hash strings to prevent ValueError
+                if not stored_hash_str:
+                    continue
+                try:
+                    # Convert the stored hexadecimal hash string back to an ImageHash object
+                    stored_image_hash = imagehash.hex_to_hash(stored_hash_str)
+                except ValueError:
+                    print(f"WARNING: Invalid hash string '{stored_hash_str}' found for map '{map_name}' in maps.py. Skipping.")
+                    continue
                 
                 # Calculate Hamming distance between the current map's hash and the stored hash
                 distance = current_image_hash - stored_image_hash
@@ -212,15 +220,16 @@ def get_grid_info(map_img: Image) -> dict:
         matched_map_name = best_match[1]
         matched_map_data = maps[matched_map_name].copy() # Create a copy to avoid modifying the original maps dictionary
         matched_map_data['name'] = matched_map_name # Explicitly add the 'name' key for clarity
+        matched_map_data['detected_hash'] = str(current_image_hash) # Add the detected hash
         return matched_map_data
     else:
         # No match found within the specified Hamming distance
-        # Print the current_image_hash directly, it's guaranteed to be defined here
-        print(f"DEBUG: parse_map_metadata: Map image not recognized. Hash: {current_image_hash}")
+        # Return UNKNOWN dictionary including the detected hash
         return {"name": "UNKNOWN",
                 "ULHC_lat": 0.0,
                 "ULHC_lon": 0.0,
-                "size_km" : 65}
+                "size_km" : 65,
+                "detected_hash": str(current_image_hash)}
 
 def find_obj_coords(x: float, y: float, map_size: float, ULHC_lat: float, ULHC_lon: float) -> list:
     '''
@@ -471,7 +480,10 @@ class MapInfo(object):
         '''
         self.map_valid = False # Assume invalid until proven otherwise
         if self.map_img and self.info: # Ensure image and info are present
-            self.grid_info = get_grid_info(self.map_img)
+            # Call get_grid_info only once
+            map_grid_info_result = get_grid_info(self.map_img)
+            self.grid_info = map_grid_info_result # Assign the result to self.grid_info
+
             if self.grid_info.get('name') != "UNKNOWN":
                 self.map_valid = True
                 self.map_objs = [] # Clear previous objects
@@ -491,8 +503,8 @@ class MapInfo(object):
                 
                 self.map_draw = ImageDraw.Draw(self.map_img) # Initialize draw object if map is valid
             else:
-                # This line has been updated to print the actual hash
-                print(f"DEBUG: parse_map_metadata: Map image not recognized. Hash: {get_grid_info(self.map_img).get('hash_value', 'N/A')}") # Get hash from returned dict
+                # Updated log message for unknown maps
+                print(f"WARNING: Map image not recognized. Hash: {self.grid_info.get('detected_hash', 'N/A')}. Please use the 'Update Map Data' button in the GUI and provide this hash from the console log.")
         else:
             print("DEBUG: parse_map_metadata: Missing map image or info data to parse.")
 
