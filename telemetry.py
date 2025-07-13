@@ -218,24 +218,31 @@ class TelemInterface(object):
             self.status = IN_MENU # Default to menu if in a valid game state
 
             # 2. Conditionally fetch map data if game is running and in a valid state
-            if self.indicators.get('valid') and self.state.get('valid'):
-                map_image_downloaded = self.map_info.download_map_image()
-                map_json_data_fetched = self.map_info.fetch_map_json_data()
+            # The map_info.json 'valid' flag is the primary indicator for being IN_FLIGHT
+            # If map_info.json is valid and not 'Hangar', then it's IN_FLIGHT
+            map_image_downloaded = self.map_info.download_map_image()
+            map_json_data_fetched = self.map_info.fetch_map_json_data()
 
-                if map_image_downloaded and map_json_data_fetched:
-                    self.map_info.parse_map_metadata() # This will set self.map_info.map_valid and grid_info
+            if map_image_downloaded and map_json_data_fetched:
+                self.map_info.parse_map_metadata() # This will set self.map_info.map_valid and grid_info
 
-                    if self.map_info.map_valid and self.map_info.grid_info.get('name') != 'Hangar':
-                        self.status = IN_FLIGHT
-                    else:
-                        self.status = IN_MENU # Could be hangar map or unrecognized valid map
+                if self.map_info.map_valid and self.map_info.grid_info.get('name') != 'Hangar':
+                    self.status = IN_FLIGHT
                 else:
-                    self.status = NO_MISSION # Game running, but map data couldn't be fully retrieved
+                    self.status = IN_MENU # Could be hangar map or unrecognized valid map
             else:
-                self.status = NO_MISSION # Indicators/state not valid, but game is running (e.g. loading screen)
+                self.status = NO_MISSION # Game running, but map data couldn't be fully retrieved or parsed
 
-            # 3. Continue with telemetry processing only if core indicators/state are valid
-            if self.indicators.get('valid') and self.state.get('valid'):
+            # Determine overall connection status based on whether WT is running and providing any valid data
+            # If indicators are valid, we consider it "connected" enough for RPC, even if state is not.
+            if self.indicators.get('valid', False): # Check indicators validity
+                self.connected = True
+            else:
+                self.connected = False # Not connected if indicators are not valid
+
+
+            # 3. Continue with telemetry processing only if core indicators are valid
+            if self.indicators.get('valid', False): # Use indicators.get('valid') for this block
                 # Fix War Thunder's odd sign conventions for pitch and roll
                 self.indicators['aviahorizon_pitch'] = -self.indicators.get('aviahorizon_pitch', 0)
                 self.indicators['aviahorizon_roll'] = -self.indicators.get('aviahorizon_roll', 0)
@@ -263,10 +270,6 @@ class TelemInterface(object):
                 self.basic_telemetry['flapState'] = self.state.get('flaps, %')
                 self.basic_telemetry['gearState'] = self.state.get('gear, %')
                 
-                self.connected = True
-            else:
-                self.connected = False # Not fully connected if indicators/state are invalid
-
             # Optionally fetch comments and events
             if comments:
                 self.get_comments()
@@ -302,4 +305,3 @@ class TelemInterface(object):
             print(f"An unexpected error occurred during telemetry fetch: {e}")
             traceback.print_exc()
             return False
-#endregion
