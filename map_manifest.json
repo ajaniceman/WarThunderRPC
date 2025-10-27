@@ -1,0 +1,17 @@
+{
+    "APP_ID": null, 
+    "MAP_HASHES": {
+        "220d791f473054d6b24e9ebb98236750b0329d2899c3d5736a5d3c2d9ff443e5": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/golan_heights.jpg",
+        "a440b45565923a28bc6ba570d875a49790ee0e2f9cde73611cde94b3a6c217d0": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/afghanistan.jpg",
+        "0d008de0918b8d09f0c1a29f0150abffbcb69c2fc8d9c04f0d99b1319d25e2cd": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/normandy.jpg",
+        "a658bba768fcc52fb1692a9778f83861b1a4c876f50bf3c26da27a2f758b1658": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/sun_city.jpg",
+        "35f353f0d9f27b00cfe1fe3248ef755fc36a5845095527ab7dd624ba99e3a084": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/sun_city.jpg",
+        "5e37448b366b235e5db8f8d9e5943b2f2e13b96693375758d3625cc9ddbbc6af": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/sweden.jpg",
+        "09c9c85462265bcb9d82a02dbecf4a92951a287b08a02999c298c9532e0d8428": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/sweden.jpg",
+        "cfb99c04947c94c19d4c523c1e0fb3a2d71d403263fefcad5f4c4fc8485d07d0": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/hangar.png",
+        "83f0c306def13c81d488bf0f8558acedf06188da920f8f0eba2d20e2d58e7ca6": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/maginot_line.jpg",
+        "5021f2e86c9eee63ffcb8345872d0d07fe432022b9aba54c78a4ce7c1cab8597": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/maginot_line.jpg",
+        "f22217072fff37e31899d9b612e9a8a28c5b9ec34298c29345b4e32b7f2763da": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/abandoned_factory.jpg",
+        "228b113a03c4486e883f08b6d09772bea4cde97d44fc037545d4f3b8318bf1ed": "https://raw.githubusercontent.com/ajaniceman/WarThunderRPC/main/mapPictures/abandoned_factory.jpg"
+    }
+}
