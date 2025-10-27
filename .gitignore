@@ -1,2 +1,8 @@
 /__pycache__/
 /.qodo/
+/dist/
+/build/
+WarthunderRPC.spec
+config.json
+default_config.json
+warthunder.ico
